@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, List, Literal, Optional
@@ -130,7 +131,18 @@ async def _embed_texts(client: httpx.AsyncClient, texts: List[str]) -> List[List
 def _startup() -> None:
     qc = get_qdrant()
     name = settings.rag_collection_name
-    cols = qc.get_collections().collections
+    last_err: Optional[Exception] = None
+    for attempt in range(20):
+        try:
+            cols = qc.get_collections().collections
+            break
+        except Exception as e:
+            last_err = e
+            logger.warning("qdrant not ready (attempt %s): %s", attempt + 1, e)
+            time.sleep(min(0.5 * (attempt + 1), 5.0))
+    else:
+        raise RuntimeError(f"Qdrant not reachable during startup: {last_err}")
+
     names = {c.name for c in cols}
     if name not in names:
         logger.info("Creating Qdrant collection %s (dim=%s)", name, settings.vector_size)
@@ -142,7 +154,10 @@ def _startup() -> None:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    get_qdrant().get_collections()
+    try:
+        get_qdrant().get_collections()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Qdrant unavailable: {e}")
     return {"status": "ok"}
 
 
